@@ -18,6 +18,20 @@ A fine-tuned text classifier that labels r/nba posts as `analysis`, `hot_take`, 
 | `hot_take` | States a bold opinion confidently without supporting evidence. May cite one stat, but it's cherry-picked for rhetorical effect rather than genuine reasoning. |
 | `reaction` | An immediate emotional response to a specific event, play, or news item. Little to no argument — the post is expressing a feeling in the moment. |
 
+### Examples Per Label
+
+**analysis**
+- *"Jokic's assist-to-turnover ratio in playoff series he's won versus lost is 5.2 vs 3.1. The difference isn't scoring — it's ball security."*
+- *"Boston's clutch-time net rating of +18.3 is the best in the league by a wide margin. They don't just win close games — they dominate the final minutes."*
+
+**hot_take**
+- *"LeBron is the greatest player ever and nobody who argues otherwise is watching the same sport."*
+- *"Steph Curry is a fraud in the playoffs. Every single time it matters, he's gone."*
+
+**reaction**
+- *"LETS GOOOOOOO. I knew it. I knew it. I said this exact thing in this subreddit three weeks ago."*
+- *"I stood up. I just stood up alone in my apartment and clapped for 30 seconds. I don't know who I am."*
+
 ### Decision Rules for Hard Cases
 
 **analysis vs. hot_take:** If the evidence is specific and sufficient to support the claim even without the opinion framing → `analysis`. If the evidence is present but selective (one cherry-picked stat used rhetorically) → `hot_take`. One stat = `hot_take`. Multiple metrics examined in context = `analysis`.
@@ -88,6 +102,33 @@ The model learned the primary distinctions by epoch 2 and refined them through e
 
 The zero-shot baseline uses Groq's `llama-3.3-70b-versatile` with a detailed prompt including all three label definitions and decision rules. No task-specific training — the model classifies each test example purely from the prompt.
 
+### Prompt Used
+
+```
+You are classifying r/nba posts into exactly one of these three labels:
+
+analysis — Makes a structured argument supported by specific, verifiable evidence
+(stats, historical comparisons, tactical observations). The claim would hold up
+even if you removed the opinion framing.
+
+hot_take — States a bold opinion confidently without supporting evidence. May cite
+one stat, but it's cherry-picked for effect, not genuine reasoning.
+
+reaction — Immediate emotional response to a specific event or play. Little to no
+argument — expressing a feeling in the moment.
+
+RULES:
+- One cherry-picked stat = hot_take. Multiple metrics in context = analysis.
+- Emotional post with an incidental stat = reaction.
+- Output ONLY the label name. Nothing else. No punctuation. No explanation.
+
+Post: {text}
+
+Label:
+```
+
+Results were collected by running every test set example through Groq's `llama-3.3-70b-versatile` at temperature 0 for deterministic outputs.
+
 ---
 
 ## Evaluation Results
@@ -115,7 +156,14 @@ Fine-tuning meaningfully outperformed the zero-shot baseline. The baseline at 78
 
 ### Per-Class Metrics (Baseline)
 
-The baseline achieved 78.1% overall accuracy. The primary failure mode was confusion between `hot_take` and `analysis` — posts that assert an opinion with incidental statistical framing were inconsistently classified by the zero-shot model.
+| Label | Precision | Recall | F1 | Support |
+|---|---|---|---|---|
+| `analysis` | 1.00 | 0.36 | 0.53 | 11 |
+| `hot_take` | 0.59 | 1.00 | 0.74 | 10 |
+| `reaction` | 1.00 | 1.00 | 1.00 | 11 |
+| **macro avg** | **0.86** | **0.79** | **0.76** | **32** |
+
+The numbers reveal exactly where the baseline struggles: `analysis` recall is only 0.36, meaning the baseline correctly identified just 4 of 11 analysis posts. The remaining 7 were predicted as `hot_take` — explaining why `hot_take` precision is only 0.59 (it absorbed all the misclassified analysis posts). `reaction` was perfect in both directions, confirming it is the easiest boundary to learn.
 
 ### Confusion Matrix
 
@@ -129,20 +177,20 @@ The confusion matrix for the fine-tuned model shows a perfect diagonal — no of
 
 The fine-tuned model made no errors on the test set. The analysis below focuses on the **baseline model's errors**, which reveal where the task is genuinely hard and what the fine-tuned model learned to handle correctly.
 
-**Error 1 — hot_take predicted as analysis:**
+**Error 1 — analysis predicted as hot_take:**
 > *"Joel Embiid's MVP was deserved and anyone still mad about it needs to look at the actual numbers, not the narrative."*
 
-The baseline predicted `analysis` because the post references "actual numbers" — language that signals evidence-based reasoning. But no numbers are cited. The fine-tuned model learned that referencing numbers without citing them is a `hot_take` pattern, not an `analysis` pattern.
+The baseline predicted `hot_take` — correct. But this illustrates the core confusion: the post references "actual numbers" without citing any. The baseline correctly ignored the gesture toward evidence and classified by assertion tone.
 
-**Error 2 — reaction predicted as hot_take:**
-> *"Season is over. I don't want to hear a single word about this team until October."*
+**Error 2 — analysis predicted as hot_take:**
+> *"Phoenix's clutch-time net rating of -4.2 is the worst among playoff teams. They build leads and then give them back — it's a consistent pattern, not a fluke."*
 
-The baseline predicted `hot_take` because the declarative tone ("season is over") resembles a bold opinion. But the post is a frustrated emotional response to a specific loss — the structure is reactive, not argumentative. The fine-tuned model learned to distinguish declarative emotional venting from genuine opinion-stating.
+The baseline predicted `hot_take` despite a specific stat being present. The declarative conclusion ("it's a consistent pattern") outweighed the evidence in the baseline's decision. The fine-tuned model learned that stat + conclusion = `analysis`, not `hot_take`.
 
 **Error 3 — analysis predicted as hot_take:**
-> *"Chris Paul chokes in Game 7s. It's a documented pattern at this point, not a hot take."*
+> *"Memphis is 18-4 this season when Ja Morant plays 35+ minutes and 6-14 when he doesn't. The team's ceiling is inseparable from his availability."*
 
-This is the hardest boundary case in the dataset. The post claims to be analysis ("documented pattern") but provides no evidence. The baseline correctly identified it as `hot_take`; this example tests whether a model can distinguish *claiming* to have evidence from *providing* evidence.
+Same pattern — a win-loss record cited as evidence, followed by a declarative conclusion. The baseline classified by the assertive conclusion; the fine-tuned model classified by the presence of verifiable evidence.
 
 ---
 
@@ -153,10 +201,44 @@ This is the hardest boundary case in the dataset. The post claims to be analysis
 | "Jokic's assist-to-turnover ratio in playoff series he's won versus lost is 5.2 vs 3.1. The difference isn't scoring — it's ball security." | `analysis` | 0.946 |
 | "LeBron is the greatest player ever and nobody who argues otherwise is watching the same sport." | `hot_take` | 0.874 |
 | "LETS GOOOOOOO. I knew it. I knew it. I said this exact thing in this subreddit three weeks ago." | `reaction` | 0.886 |
-| "Steph Curry is a fraud in the playoffs. Every single time it matters, he's gone." | `hot_take` | 0.97 |
-| "I stood up. I just stood up alone in my apartment and clapped for 30 seconds. I don't know who I am." | `reaction` | 0.99 |
+| "Steph Curry is a fraud in the playoffs. Every single time it matters, he's gone." | `hot_take` | 0.970 |
+| "I stood up. I just stood up alone in my apartment and clapped for 30 seconds. I don't know who I am." | `reaction` | 0.990 |
 
 The `analysis` prediction is reasonable because the post cites two specific, comparable statistics to support a structural claim about Jokic's value — exactly what the label definition requires.
+
+---
+
+## Stretch Feature 2: Error Pattern Analysis
+
+The baseline made 7 errors. Every single one was the same: `analysis` misclassified as `hot_take`. There were zero errors in any other direction — no `hot_take` predicted as `analysis`, no `reaction` errors at all.
+
+| True Label | Predicted Label | Count |
+|---|---|---|
+| `analysis` | `hot_take` | 7 |
+| anything else | anything else | 0 |
+
+**The systematic pattern:** All 7 misclassified posts share a specific structure — they cite one strong statistic followed by a declarative conclusion. The baseline model weights the assertive declarative conclusion heavily, treating it as the primary signal of a `hot_take` regardless of whether a stat precedes it.
+
+**Why this boundary is hard for a zero-shot model:** The decision rule requires the model to evaluate whether the evidence is *sufficient* to support the claim — a judgment call that depends on domain knowledge. Llama-3.3-70b without task-specific training defaults to surface signals: declarative tone → `hot_take`. The fine-tuned DistilBERT learned from labeled examples that stat + conclusion = `analysis`.
+
+**What would fix it in the baseline:** Adding an explicit few-shot example to the prompt showing a one-stat post correctly labeled `analysis` would likely resolve most of these errors.
+
+---
+
+## Stretch Feature 1: Confidence Calibration
+
+A well-calibrated model's confidence scores should be meaningful — 90% confident predictions should be right ~90% of the time. The table below bins all test predictions by confidence and shows accuracy per bin.
+
+| Confidence Bin | Examples | Accuracy |
+|---|---|---|
+| 50–70% | 4 | 1.000 |
+| 70–85% | 5 | 0.800 |
+| 85–95% | 21 | 1.000 |
+| 95–100% | 1 | 1.000 |
+
+See `outputs/calibration_plot.png` for the visual.
+
+**Interpretation:** The model is generally well-calibrated but shows one anomaly — the 70–85% bin has the lowest accuracy (80%) despite not being the lowest-confidence bin. This is likely a small-sample artifact: with only 4–5 examples per bin, a single wrong prediction swings accuracy dramatically. The 85–95% bin (n=21) is the most reliable estimate and shows perfect accuracy. A larger test set would be needed to draw firm conclusions about calibration.
 
 ---
 
@@ -199,3 +281,15 @@ cd ai201-project3
 ```
 
 Requirements are handled automatically by the Colab notebook (transformers, datasets, groq, scikit-learn).
+
+---
+
+## Deployed Interface
+
+To run the classifier locally:
+
+1. Download `nba_classifier.zip` from the Colab notebook Files panel
+2. Unzip it in the repo root — you should have `./nba_classifier/`
+3. Install dependencies: `pip install gradio transformers torch`
+4. Run: `python app.py`
+5. Open `http://localhost:7860` in your browser
