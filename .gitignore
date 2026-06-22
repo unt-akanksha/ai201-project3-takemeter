@@ -1,0 +1,5 @@
+nba_classifier/
+*.zip
+__pycache__/
+*.pyc
+.env
